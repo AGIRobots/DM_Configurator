@@ -3,19 +3,16 @@ import numpy as np
 from enum import IntEnum
 from struct import unpack
 from struct import pack
-import can
-import subprocess
-import os
-import time
-
+from socketcan_interface import SocketCANInterface
+from slcan_interface import SLCANInterface
 
 class Motor:
     def __init__(self, MotorType, SlaveID, MasterID):
         """
-        define Motor object 定义电机对象
-        :param MotorType: Motor type 电机类型
-        :param SlaveID: CANID 电机ID
-        :param MasterID: MasterID 主机ID 建议不要设为0
+        モーターオブジェクトを定義します
+        :param MotorType: モータータイプ
+        :param SlaveID: CAN スレーブ ID
+        :param MasterID: マスター ID（0 にしないことを推奨）
         """
         self.Pd = float(0)
         self.Vd = float(0)
@@ -36,30 +33,30 @@ class Motor:
 
     def getPosition(self):
         """
-        get the position of the motor 获取电机位置
-        :return: the position of the motor 电机位置
+        モーターの位置を取得します
+        :return: モーターの位置
         """
         return self.state_q
 
     def getVelocity(self):
         """
-        get the velocity of the motor 获取电机速度
-        :return: the velocity of the motor 电机速度
+        モーターの速度を取得します
+        :return: モーターの速度
         """
         return self.state_dq
 
     def getTorque(self):
         """
-        get the torque of the motor 获取电机力矩
-        :return: the torque of the motor 电机力矩
+        モーターのトルクを取得します
+        :return: モーターのトルク
         """
         return self.state_tau
 
     def getParam(self, RID):
         """
-        get the parameter of the motor 获取电机内部的参数，需要提前读取
-        :param RID: DM_variable 电机参数
-        :return: the parameter of the motor 电机参数
+        モーターの内部パラメータを取得します（事前に読み出しておく必要があります）
+        :param RID: `DM_variable` のパラメータ識別子
+        :return: パラメータの値（存在しない場合は None）
         """
         if RID in self.temp_param_dict:
             return self.temp_param_dict[RID]
@@ -78,118 +75,33 @@ class MotorControl:
                    # H3510            DMG62150      DMH6220
                    [12.5 , 280 , 1],[12.5 , 45 , 10],[12.5 , 45 , 10]]
 
-    def __init__(self, serial_port, motor_type, motor_id=1, baudrate=115200):
+    def __init__(self, interface: str = 'can0', bitrate: int = 1000000, interface_type: str = 'socketcan'):
         """
-        define MotorControl object 定义电机控制对象
-        :param serial_device: serial object 串口对象
+        モーター制御オブジェクトを定義します
+        :param interface: CAN インターフェース名 (e.g., 'can0' for SocketCAN, '/dev/ttyACM0' for SLCAN)
+        :param bitrate: CAN ビットレート
+        :param interface_type: インターフェースタイプ ('socketcan' または 'slcan')
         """
-        self.serial_port = serial_port
-        self.slcand_process = None
-        self.can_channel = None
-        self.motor_type = motor_type
-        self.motor_id_slave = motor_id  # スレーブID
+        if interface_type.lower() == 'slcan':
+            self.can_interface = SLCANInterface(interface, bitrate=bitrate)
+        else:  # デフォルトは SocketCAN
+            self.can_interface = SocketCANInterface(interface, bitrate=bitrate)
+        
         self.motors_map = dict()
         self.data_save = bytes()  # save data
-
-
-        # if self.serial_.is_open:  # open the serial port
-        #     print("Serial port is open")
-        #     serial_device.close()
-        # self.serial_.open()
-
-        if not self._setup_slcan():
-            self.bus = None
-            return
-        try:
-            # socketcan経由でCANバスに接続（slcandでセットアップ済み）
-            self.bus = can.Bus(interface='socketcan', channel=self.can_channel, bitrate=1000000)
-            print(f"CAN bus initialized: {self.can_channel}")
-        except OSError as e:
-            print(f"CAN bus initialization failed: {e}")
-            self.bus = None
-            self._cleanup_slcan()
-            return
-        
-        self.motor_can_id = self.motor_id_slave  # MIT制御用（0x00の場合はマスターID）
-    
-    def _setup_slcan(self):
-        """
-        slcandを自動セットアップ
-        既に起動している場合はスキップ、失敗時はフォールバック
-        """
-        try:
-            # 既存のslcandプロセスを探す
-            result = subprocess.run(['pgrep', '-f', f'slcand.*{self.serial_port}'],
-                                   capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                print(f"Existing slcand process found")
-                # チャネル名を推測 (通常は can0, can1, can2...)
-                self.can_channel = self._find_can_channel()
-                return self.can_channel is not None
-            
-            # Start slcand (sudo permissions required)
-            print(f"Setting up slcand on: {self.serial_port}")
-            cmd = ['sudo', 'slcand', '-o', '-c', '-s8', self.serial_port, 'can2']
-            self.slcand_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, 
-                                                   stderr=subprocess.PIPE)
-            time.sleep(1)  # slcand起動待機
-            
-            # ip link set can2 up
-            cmd_up = ['sudo', 'ip', 'link', 'set', 'can2', 'up']
-            result = subprocess.run(cmd_up, capture_output=True, text=True, timeout=5)
-            
-            if result.returncode == 0:
-                self.can_channel = 'can2'
-                print(f"can channel initialized: {self.can_channel}")
-                return True
-            else:
-                print(f"ip link up command failed: {result.stderr}")
-                return False
-                
-        except subprocess.TimeoutExpired:
-            print("slcand setup timeout expired")
-            return False
-        except FileNotFoundError as e:
-            print(f"command execution failed (sudo permissions required): {e}")
-            return False
-        except Exception as e:
-            print(f"slcand setup error: {e}")
-            return False
-    
-    def _find_can_channel(self):
-        """CAN チャネルを自動検出"""
-        try:
-            for i in range(5):
-                channel = f'can{i}'
-                if os.path.exists(f'/sys/class/net/{channel}'):
-                    return channel
-        except Exception as e:
-            print(f"can channel detection error: {e}")
-        return None
-    
-    def _cleanup_slcan(self):
-        """slcandプロセスのクリーンアップ"""
-        if self.slcand_process is not None:
-            try:
-                subprocess.run(['sudo', 'ip', 'link', 'set', 'can2', 'down'],
-                             timeout=5, capture_output=True)
-                self.slcand_process.terminate()
-                self.slcand_process.wait(timeout=5)
-                print("slcand process terminated and can channel down")
-            except Exception as e:
-                print(f"slcand cleanup error: {e}")
-    
-    
+        if not self.can_interface.connect():
+            print(f"Failed to connect to CAN interface: {interface}")
+            self.can_interface = None           
 
     def controlMIT(self, DM_Motor, kp: float, kd: float, q: float, dq: float, tau: float):
         """
-        MIT Control Mode Function 达妙电机MIT控制模式函数
-        :param DM_Motor: Motor object 电机对象
-        :param kp: kp
-        :param kd:  kd
-        :param q:  position  期望位置
-        :param dq:  velocity  期望速度
-        :param tau: torque  期望力矩
+        MIT制御モードの送信関数
+        :param DM_Motor: Motor オブジェクト
+        :param kp: 比例ゲイン
+        :param kd: 微分ゲイン
+        :param q: 目標位置
+        :param dq: 目標速度
+        :param tau: 目標トルク
         :return: None
         """
         if DM_Motor.SlaveID not in self.motors_map:
@@ -214,28 +126,28 @@ class MotorControl:
         data_buf[6] = ((kd_uint & 0xf) << 4) | ((tau_uint >> 8) & 0xf)
         data_buf[7] = tau_uint & 0xff
         self.__send_data(DM_Motor.SlaveID, data_buf)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def control_delay(self, DM_Motor, kp: float, kd: float, q: float, dq: float, tau: float, delay: float):
         """
-        MIT Control Mode Function with delay 达妙电机MIT控制模式函数带延迟
-        :param DM_Motor: Motor object 电机对象
-        :param kp: kp
-        :param kd: kd
-        :param q:  position  期望位置
-        :param dq:  velocity  期望速度
-        :param tau: torque  期望力矩
-        :param delay: delay time 延迟时间 单位秒
+        遅延付き MIT 制御モード送信
+        :param DM_Motor: Motor オブジェクト
+        :param kp: 比例ゲイン
+        :param kd: 微分ゲイン
+        :param q: 目標位置
+        :param dq: 目標速度
+        :param tau: 目標トルク
+        :param delay: 遅延時間（秒）
         """
         self.controlMIT(DM_Motor, kp, kd, q, dq, tau)
         sleep(delay)
 
     def control_Pos_Vel(self, Motor, P_desired: float, V_desired: float):
         """
-        control the motor in position and velocity control mode 电机位置速度控制模式
-        :param Motor: Motor object 电机对象
-        :param P_desired: desired position 期望位置
-        :param V_desired: desired velocity 期望速度
+        位置・速度制御モードでモーターを制御します
+        :param Motor: Motor オブジェクト
+        :param P_desired: 目標位置
+        :param V_desired: 目標速度
         :return: None
         """
         if Motor.SlaveID not in self.motors_map:
@@ -249,13 +161,13 @@ class MotorControl:
         data_buf[4:8] = V_desired_uint8s
         self.__send_data(motorid, data_buf)
         # time.sleep(0.001)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def control_Vel(self, Motor, Vel_desired):
         """
-        control the motor in velocity control mode 电机速度控制模式
-        :param Motor: Motor object 电机对象
-        :param Vel_desired: desired velocity 期望速度
+        速度制御モードでモーターを制御します
+        :param Motor: Motor オブジェクト
+        :param Vel_desired: 目標速度
         """
         if Motor.SlaveID not in self.motors_map:
             print("control_VEL ERROR : Motor ID not found")
@@ -265,15 +177,14 @@ class MotorControl:
         Vel_desired_uint8s = float_to_uint8s(Vel_desired)
         data_buf[0:4] = Vel_desired_uint8s
         self.__send_data(motorid, data_buf)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def control_pos_force(self, Motor, Pos_des: float, Vel_des, i_des):
         """
-        control the motor in EMIT control mode 电机力位混合模式
-        :param Pos_des: desired position rad  期望位置 单位为rad
-        :param Vel_des: desired velocity rad/s  期望速度 为放大100倍
-        :param i_des: desired current rang 0-10000 期望电流标幺值放大10000倍
-        电流标幺值：实际电流值除以最大电流值，最大电流见上电打印
+        力／位置ハイブリッド制御（EMIT）モードでモーターを制御します
+        :param Pos_des: 目標位置（rad）
+        :param Vel_des: 目標速度（rad/s）
+        :param i_des: 最大電流に対する比率を 0-10000 で表した値（スケール 10000）
         """
         if Motor.SlaveID not in self.motors_map:
             print("control_pos_vel ERROR : Motor ID not found")
@@ -289,82 +200,71 @@ class MotorControl:
         data_buf[6] = ides_uint & 0xff
         data_buf[7] = ides_uint >> 8
         self.__send_data(motorid, data_buf)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def enable(self, Motor):
         """
-        enable motor 使能电机
-        最好在上电后几秒后再使能电机
-        :param Motor: Motor object 电机对象
+        モーターを有効化します
+        電源投入後、数秒待ってから有効化することを推奨します
+        :param Motor: Motor オブジェクト
         """
         self.__control_cmd(Motor, np.uint8(0xFC))
         sleep(0.1)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def enable_old(self, Motor ,ControlMode):
         """
-        enable motor old firmware 使能电机旧版本固件，这个是为了旧版本电机固件的兼容性
-        可恶的旧版本固件使能需要加上偏移量
-        最好在上电后几秒后再使能电机
-        :param Motor: Motor object 电机对象
+        古いファームウェア用の有効化互換処理
+        旧版ファームウェアは特別なオフセット付きで有効化する必要があるための互換処理です
+        :param Motor: Motor オブジェクト
         """
         data_buf = np.array([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfc], np.uint8)
         enable_id = ((int(ControlMode)-1) << 2) + Motor.SlaveID
         self.__send_data(enable_id, data_buf)
         sleep(0.1)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def disable(self, Motor):
         """
-        disable motor 失能电机
-        :param Motor: Motor object 电机对象
+        モーターを無効化します
+        :param Motor: Motor オブジェクト
         """
         self.__control_cmd(Motor, np.uint8(0xFD))
         sleep(0.1)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def set_zero_position(self, Motor):
         """
-        set the zero position of the motor 设置电机0位
-        :param Motor: Motor object 电机对象
+        モーターのゼロ位置を設定します
+        :param Motor: Motor オブジェクト
         """
         self.__control_cmd(Motor, np.uint8(0xFE))
         sleep(0.1)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def recv(self):
-        """
-        Receive data from CAN bus CANバスからデータを受信
-        """
-        if self.bus is None:
+        """Receive CAN messages and process them"""
+        if self.can_interface is None:
             return
         
-        try:
-            msg = self.bus.recv(timeout=0.001)
-            if msg is not None:
-                CANID = msg.arbitration_id
-                CMD = 0x11  # MIT制御応答
-                data = msg.data
-                self.__process_packet(data, CANID, CMD)
-        except can.CanError:
-            pass
+        # Receive CAN message
+        msg = self.can_interface.receive_message(timeout=0.01)
+        if msg is not None:
+            can_id, data = msg
+            # Assume it's a feedback message
+            self.__process_packet(bytes(data), can_id, 0x11)
 
     def recv_set_param_data(self):
-        """
-        Receive parameter setting data from CAN bus
-        """
-        if self.bus is None:
+        """Receive parameter response messages"""
+        if self.can_interface is None:
             return
         
-        try:
-            msg = self.bus.recv(timeout=0.001)
-            if msg is not None:
-                CANID = msg.arbitration_id
-                CMD = 0x11
-                data = msg.data
-                self.__process_set_param_packet(data, CANID, CMD)
-        except can.CanError:
-            pass
+        # Receive CAN message
+        msg = self.can_interface.receive_message(timeout=0.01)
+        if msg is not None:
+            can_id, data = msg
+            # Process the parameter response
+            self.__process_set_param_packet(bytes(data), can_id, 0x11)
 
     def __process_packet(self, data, CANID, CMD):
         if CMD == 0x11:
@@ -401,7 +301,7 @@ class MotorControl:
         if CMD == 0x11 and (data[2] == 0x33 or data[2] == 0x55):
             masterid=CANID
             slaveId = ((data[1] << 8) | data[0])
-            if CANID==0x00:  #防止有人把MasterID设为0稳一手
+            if CANID==0x00:  # MasterID が 0 に設定されることを防ぐ
                 masterid=slaveId
 
             if masterid not in self.motors_map:
@@ -411,7 +311,7 @@ class MotorControl:
                     masterid=slaveId
 
             RID = data[3]
-            # 读取参数得到的数据
+            # パラメータ読み取りで得られたデータ
             if is_in_ranges(RID):
                 #uint32类型
                 num = uint8s_to_uint32(data[4], data[5], data[6], data[7])
@@ -425,8 +325,8 @@ class MotorControl:
 
     def addMotor(self, Motor):
         """
-        add motor to the motor control object 添加电机到电机控制对象
-        :param Motor: Motor object 电机对象
+        モーターをモーター制御オブジェクトに追加します
+        :param Motor: Motor オブジェクト
         """
         self.motors_map[Motor.SlaveID] = Motor
         if Motor.MasterID != 0:
@@ -439,20 +339,23 @@ class MotorControl:
 
     def __send_data(self, motor_id, data):
         """
-        send data to the motor via CAN bus 通过CAN发送数据到电机
-        :param motor_id: CAN ID
-        :param data: CAN data (8 bytes)
-        :return:
+        Send CAN message to motor
+        :param motor_id: CAN message ID
+        :param data: Data to send (8 bytes)
+        :return: None
         """
-        if self.bus is None:
-            print("Error: CAN bus is not initialized")
+        if self.can_interface is None:
+            print("CAN interface not connected")
             return
         
-        try:
-            msg = can.Message(arbitration_id=motor_id, data=bytes(data), is_extended_id=False)
-            self.bus.send(msg)
-        except can.CanError as e:
-            print(f"can send error: {e}")
+        # Convert numpy array to bytes if needed
+        if isinstance(data, np.ndarray):
+            data_bytes = bytes(data)
+        else:
+            data_bytes = data
+        
+        # Send via CAN interface
+        self.can_interface.send_message(motor_id, data_bytes)
 
     def __read_RID_param(self, Motor, RID):
         can_id_l = Motor.SlaveID & 0xff #id low 8 bits
@@ -474,9 +377,9 @@ class MotorControl:
 
     def switchControlMode(self, Motor, ControlMode):
         """
-        switch the control mode of the motor 切换电机控制模式
-        :param Motor: Motor object 电机对象
-        :param ControlMode: Control_Type 电机控制模式 example:MIT:Control_Type.MIT MIT模式
+        モーターの制御モードを切り替えます
+        :param Motor: Motor オブジェクト
+        :param ControlMode: Control_Type（例: MIT は Control_Type.MIT）
         """
         max_retries = 20
         retry_interval = 0.1  #retry times
@@ -495,8 +398,8 @@ class MotorControl:
 
     def save_motor_param(self, Motor):
         """
-        save the all parameter  to flash 保存所有电机参数
-        :param Motor: Motor object 电机对象
+        すべてのパラメータをフラッシュに保存します
+        :param Motor: Motor オブジェクト
         :return:
         """
         can_id_l = Motor.SlaveID & 0xff #id low 8 bits
@@ -508,11 +411,11 @@ class MotorControl:
 
     def change_limit_param(self, Motor_Type, PMAX, VMAX, TMAX):
         """
-        change the PMAX VMAX TMAX of the motor 改变电机的PMAX VMAX TMAX
+        モーターの PMAX / VMAX / TMAX を変更します
         :param Motor_Type:
-        :param PMAX: 电机的PMAX
-        :param VMAX: 电机的VMAX
-        :param TMAX: 电机的TMAX
+        :param PMAX: モーターの PMAX
+        :param VMAX: モーターの VMAX
+        :param TMAX: モーターの TMAX
         :return:
         """
         self.Limit_Param[Motor_Type][0] = PMAX
@@ -521,13 +424,13 @@ class MotorControl:
 
     def refresh_motor_status(self,Motor):
         """
-        get the motor status 获得电机状态
+        モーターの状態を取得します
         """
         can_id_l = Motor.SlaveID & 0xff #id low 8 bits
         can_id_h = (Motor.SlaveID >> 8) & 0xff  #id high 8 bits
         data_buf = np.array([np.uint8(can_id_l), np.uint8(can_id_h), 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00], np.uint8)
         self.__send_data(0x7FF, data_buf)
-        self.recv()  # receive the data from serial port
+        self.recv() 
 
     def change_motor_param(self, Motor, RID, data):
         """
@@ -553,10 +456,10 @@ class MotorControl:
 
     def read_motor_param(self, Motor, RID):
         """
-        read only the RID of the motor 读取电机的内部信息例如 版本号等
-        :param Motor: Motor object 电机对象
-        :param RID: DM_variable 电机参数
-        :return: 电机参数的值
+        モーターの内部情報（例: バージョン番号）を読み取ります
+        :param Motor: Motor オブジェクト
+        :param RID: DM_variable（モーターのパラメータ識別子）
+        :return: パラメータの値
         """
         max_retries = 20
         retry_interval = 0.05  #retry times
@@ -570,18 +473,25 @@ class MotorControl:
         return None
 
     # -------------------------------------------------
-    # Cleanup method for CAN bus
-    def close(self):
-        """
-        Close CAN bus and cleanup slcand process
-        """
-        if self.bus is not None:
-            self.bus.shutdown()
-            print("can bus shutdown")
-        self._cleanup_slcan()
+    # Extract packets from the serial data
+    def __extract_packets(self, data):
+        frames = []
+        header = 0xAA
+        tail = 0x55
+        frame_length = 16
+        i = 0
+        remainder_pos = 0
 
-
-
+        while i <= len(data) - frame_length:
+            if data[i] == header and data[i + frame_length - 1] == tail:
+                frame = data[i:i + frame_length]
+                frames.append(frame)
+                i += frame_length
+                remainder_pos = i
+            else:
+                i += 1
+        self.data_save = data[remainder_pos:]
+        return frames
 
 
 def LIMIT_MIN_MAX(x, min, max):

@@ -7,11 +7,13 @@ from PySide6.QtCore import Qt, QTimer
 
 import sys
 import csv
-from serial.tools import list_ports
+import os
 try:
-    from DM_CAN import MotorControl
+    from DM_CAN import MotorControl, Motor, Control_Type
 except ImportError:
     MotorControl = None
+    Motor = None
+    Control_Type = None
 
 class mainGUI(QWidget):
     def __init__(self):
@@ -85,35 +87,60 @@ class mainGUI(QWidget):
         self.connect_btn.clicked.connect(self.on_connect)
         self.disconnect_btn.clicked.connect(self.on_disconnect)
         
-        # ポート更新タイマーをセットアップ
-        self.port_update_timer = QTimer()
-        self.port_update_timer.timeout.connect(self.update_serial_ports)
-        self.port_update_timer.start(1000)  # 1秒ごとに更新
+        # インターフェースタイプ変更時にシグナル接続
+        self.interface_type.currentTextChanged.connect(self.on_interface_type_changed)
+        
+        # インターフェース更新タイマーをセットアップ
+        self.interface_update_timer = QTimer()
+        self.interface_update_timer.timeout.connect(self.update_interface_periodically)
+        self.interface_update_timer.start(1000)  # 1秒ごとに更新
 
     def on_connect(self):
         """接続ボタン押下時の処理"""
-        if MotorControl is None:
+        if MotorControl is None or Motor is None:
             print("Error: DM_CAN module not found")
             return
         
         try:
-            port = self.serial_port.currentText().split()[0]  # ポート名を抽出
-            baudrate = int(self.baudrate.currentText())
-            motor_type = self.motor_type.currentText()
+            interface_type = self.interface_type.currentText().lower()
+            interface = self.can_interface.currentText()
+            if interface == "利用可能なインターフェースなし" or interface == "利用可能なシリアルポートなし":
+                print("Error: No CAN interface available")
+                return
+                
+            bitrate = int(self.bitrate.currentText())
+            motor_type_text = self.motor_type.currentText()
             motor_id = self.motor_id.value()
             
-            self.motor_control = MotorControl(port, motor_type, motor_id, baudrate)
+            # モータータイプのマッピング（文字列をインデックスに変換）
+            motor_type_map = {
+                "DM4310": 0, "DM4310_48V": 1, "DM4340": 2, "DM4340_48V": 3,
+                "DM6006": 4, "DM8006": 5, "DM8009": 6, "DM10010L": 7,
+                "DM10010": 8, "DMH3510": 9, "DMG62150": 10, "DMH6220": 11
+            }
+            motor_type_idx = motor_type_map.get(motor_type_text, 0)
+            
+            # MotorControl オブジェクトを作成（インターフェースタイプを指定）
+            self.motor_control = MotorControl(interface, bitrate, interface_type)
+            
+            # Motor オブジェクトを追加
+            motor = Motor(motor_type_idx, motor_id, 0)
+            self.motor_control.addMotor(motor)
+            
             self.is_connected = True
             self.update_connection_indicator()
-            self.serial_port.setEnabled(False)
-            self.baudrate.setEnabled(False)
+            self.interface_type.setEnabled(False)
+            self.can_interface.setEnabled(False)
+            self.bitrate.setEnabled(False)
             self.motor_type.setEnabled(False)
             self.motor_id.setEnabled(False)
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
-            print(f"Connected to {port}")
+            print(f"Connected to {interface} ({interface_type}) - Motor: {motor_type_text} (ID: {motor_id})")
         except Exception as e:
             print(f"Connection error: {e}")
+            import traceback
+            traceback.print_exc()
             self.is_connected = False
             self.update_connection_indicator()
 
@@ -121,12 +148,15 @@ class mainGUI(QWidget):
         """切断ボタン押下時の処理"""
         try:
             if self.motor_control is not None:
-                self.motor_control._cleanup_slcan()
+                # CANインターフェースの切断
+                if hasattr(self.motor_control, 'can_interface'):
+                    self.motor_control.can_interface.disconnect()
             self.is_connected = False
             self.motor_control = None
             self.update_connection_indicator()
-            self.serial_port.setEnabled(True)
-            self.baudrate.setEnabled(True)
+            self.interface_type.setEnabled(True)
+            self.can_interface.setEnabled(True)
+            self.bitrate.setEnabled(True)
             self.motor_type.setEnabled(True)
             self.motor_id.setEnabled(True)
             self.connect_btn.setEnabled(True)
@@ -154,9 +184,67 @@ class mainGUI(QWidget):
     # ==============================
     # ユーティリティ関数
     # ==============================
+    def update_interface_periodically(self):
+        """利用可能なCANインターフェースまたはシリアルポートを定期的に更新"""
+        interface_type = self.interface_type.currentText()
+        if interface_type.lower() == "slcan":
+            self.update_serial_ports()
+        else:
+            self.update_can_interfaces()
+    
+    def update_can_interfaces(self):
+        """利用可能なCANインターフェースを定期的に更新"""
+        current_interfaces = self.get_available_can_interfaces()
+        
+        # インターフェースのリストが変更された場合のみ更新
+        if current_interfaces != self.last_ports:
+            self.last_ports = current_interfaces
+            
+            # 接続していない場合のみインターフェース選択肢を更新
+            if not self.is_connected:
+                current_selection = self.can_interface.currentText()
+                self.can_interface.clear()
+                self.can_interface.addItems(current_interfaces)
+                
+                # 以前選択されていたインターフェースが存在すれば復元
+                index = self.can_interface.findText(current_selection)
+                if index >= 0:
+                    self.can_interface.setCurrentIndex(index)
+
+    # ==============================
+    # ==============================
+    def get_available_can_interfaces(self):
+        """利用可能なCANインターフェースを取得"""
+        interfaces = []
+        # /sys/class/net/を確認してCANインターフェースを探す
+        try:
+            if os.path.exists('/sys/class/net'):
+                for interface in os.listdir('/sys/class/net'):
+                    if interface.startswith('can') or interface.startswith('vcan'):
+                        interfaces.append(interface)
+        except Exception as e:
+            print(f"Error detecting CAN interfaces: {e}")
+        
+        return sorted(interfaces) if interfaces else ["利用可能なインターフェースなし"]
+    
+    def get_available_serial_ports(self):
+        """利用可能なシリアルポートを取得"""
+        import glob
+        ports = []
+        try:
+            # Linux上のシリアルポートを探す
+            if os.path.exists('/dev'):
+                # ttyUSB*, ttyACM* などを探す
+                for pattern in ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/ttyS*']:
+                    ports.extend(glob.glob(pattern))
+        except Exception as e:
+            print(f"Error detecting serial ports: {e}")
+        
+        return sorted(ports) if ports else ["利用可能なシリアルポートなし"]
+    
     def update_serial_ports(self):
         """利用可能なシリアルポートを定期的に更新"""
-        current_ports = self.get_available_ports()
+        current_ports = self.get_available_serial_ports()
         
         # ポートのリストが変更された場合のみ更新
         if current_ports != self.last_ports:
@@ -164,24 +252,14 @@ class mainGUI(QWidget):
             
             # 接続していない場合のみポート選択肢を更新
             if not self.is_connected:
-                current_selection = self.serial_port.currentText()
-                self.serial_port.clear()
-                self.serial_port.addItems(current_ports)
+                current_selection = self.can_interface.currentText()
+                self.can_interface.clear()
+                self.can_interface.addItems(current_ports)
                 
                 # 以前選択されていたポートが存在すれば復元
-                index = self.serial_port.findText(current_selection)
+                index = self.can_interface.findText(current_selection)
                 if index >= 0:
-                    self.serial_port.setCurrentIndex(index)
-
-    # ==============================
-    # ==============================
-    def get_available_ports(self):
-        """現在接続されているシリアルポートを取得"""
-        ports = []
-        for port, desc, hwid in sorted(list_ports.comports()):
-            if desc.lower() != "n/a":  # 説明がn/aのものは除外
-                ports.append(f"{port} ({desc})")
-        return ports if ports else ["利用可能なポートなし"]
+                    self.can_interface.setCurrentIndex(index)
 
     # ==============================
     # 各セクション作成用メソッド
@@ -194,27 +272,36 @@ class mainGUI(QWidget):
 
         row = 0
         
-        # シリアルポート
-        layout.addWidget(QLabel("シリアルポート"), row, 0)
-        self.serial_port = QComboBox()
-        available_ports = self.get_available_ports()
-        self.serial_port.addItems(available_ports)
-        self.serial_port.setFixedWidth(300)
-        layout.addWidget(self.serial_port, row, 1)
+        # インターフェースタイプ
+        layout.addWidget(QLabel("インターフェースタイプ"), row, 0)
+        self.interface_type = QComboBox()
+        self.interface_type.addItems(["SocketCAN", "SLCAN"])
+        self.interface_type.setFixedWidth(300)
+        layout.addWidget(self.interface_type, row, 1)
         row += 1
         
-        # ボーレート
-        layout.addWidget(QLabel("ボーレート"), row, 0)
-        self.baudrate = QComboBox()
-        self.baudrate.addItems(["9600", "19200", "38400", "57600", "115200"])
-        self.baudrate.setCurrentText("115200")
-        layout.addWidget(self.baudrate, row, 1)
+        # インターフェース/シリアルポート（ラベルは動的に変更される）
+        self.interface_label = QLabel("CANインターフェース")
+        layout.addWidget(self.interface_label, row, 0)
+        self.can_interface = QComboBox()
+        available_interfaces = self.get_available_can_interfaces()
+        self.can_interface.addItems(available_interfaces)
+        self.can_interface.setFixedWidth(300)
+        layout.addWidget(self.can_interface, row, 1)
+        row += 1
+        
+        # CANビットレート
+        layout.addWidget(QLabel("CANビットレート"), row, 0)
+        self.bitrate = QComboBox()
+        self.bitrate.addItems(["1000000", "500000", "250000", "125000"])
+        self.bitrate.setCurrentText("1000000")
+        layout.addWidget(self.bitrate, row, 1)
         row += 1
         
         # モータータイプ
         layout.addWidget(QLabel("モーターの種類"), row, 0)
         self.motor_type = QComboBox()
-        self.motor_type.addItems(["4310", "4310_48", "4340", "4340_48", "6006", "8006", "8009", "10010L", "10010", "H3510", "DMG62150", "DMH6220"])
+        self.motor_type.addItems(["DM4310", "DM4310_48V", "DM4340", "DM4340_48V", "DM6006", "DM8006", "DM8009", "DM10010L", "DM10010", "DMH3510", "DMG62150", "DMH6220"])
         layout.addWidget(self.motor_type, row, 1)
         row += 1
         
@@ -247,6 +334,34 @@ class mainGUI(QWidget):
         layout.setRowStretch(row, 1)
         group.setLayout(layout)
         return group
+    
+    def on_interface_type_changed(self):
+        """インターフェースタイプが変更された時の処理"""
+        self.update_interface_display()
+    
+    def update_interface_display(self):
+        """インターフェースタイプに応じてラベルと選択肢を更新"""
+        interface_type = self.interface_type.currentText()
+        if interface_type.lower() == "slcan":
+            self.interface_label.setText("シリアルポート")
+            if not self.is_connected:
+                current_selection = self.can_interface.currentText()
+                self.can_interface.clear()
+                self.can_interface.addItems(self.get_available_serial_ports())
+                # 以前選択されていたポートが存在すれば復元
+                index = self.can_interface.findText(current_selection)
+                if index >= 0:
+                    self.can_interface.setCurrentIndex(index)
+        else:
+            self.interface_label.setText("CANインターフェース")
+            if not self.is_connected:
+                current_selection = self.can_interface.currentText()
+                self.can_interface.clear()
+                self.can_interface.addItems(self.get_available_can_interfaces())
+                # 以前選択されていたインターフェースが存在すれば復元
+                index = self.can_interface.findText(current_selection)
+                if index >= 0:
+                    self.can_interface.setCurrentIndex(index)
 
     # --- (0, 1) ID / FeedBack ---
     def create_id_feedback_group(self):

@@ -1,20 +1,28 @@
 import time
-
 from DM_CAN import MotorControl, Motor, DM_Motor_Type, Control_Type
 
 # === User configuration ===
-SERIAL_PORT = '/dev/ttyACM4'  # Change to your serial port
-MOTOR_TYPE = DM_Motor_Type.DM4310.value  # change if different
-SLAVE_ID = 0x001           # set to your motor's slave ID
-TARGET_VEL = 1.5           # rad/s (start small!)
+CAN_INTERFACE = 'can0'      # CAN interface name
+CAN_BITRATE = 1000000       # 1Mbps as per datasheet default
+SLAVE_ID = 0x002             # set to your motor's slave ID
+MOTOR_TYPE = DM_Motor_Type.DM4310  # change if different
+TARGET_VEL = 2            # rad/s (start small!)
 RUNTIME_SEC = 5.0           # how long to hold the command
 RECV_INTERVAL = 0.05        # seconds between polling recv()
 # ==========================
 
 
 def main():
-    mc = MotorControl(SERIAL_PORT, MOTOR_TYPE, SLAVE_ID)
-    motor = Motor(MOTOR_TYPE, SLAVE_ID, SLAVE_ID)
+    print(f'Initializing motor control on {CAN_INTERFACE} (bitrate={CAN_BITRATE})')
+    
+    # Create motor control instance with new SocketCAN interface
+    mc = MotorControl(interface=CAN_INTERFACE, bitrate=CAN_BITRATE)
+    
+    if mc.can_interface is None:
+        print('Failed to connect to CAN interface')
+        return
+
+    motor = Motor(int(MOTOR_TYPE), SLAVE_ID, SLAVE_ID)
     mc.addMotor(motor)
     mc.switchControlMode(motor, Control_Type.VEL)
 
@@ -56,12 +64,15 @@ def main():
         except Exception:
             pass
     finally:
-        print('Disabling motor and closing connection')
+        print('Disabling motor and closing CAN connection')
         try:
             mc.disable(motor)
         except Exception:
             pass
-        mc.close()
+        try:
+            mc.can_interface.disconnect()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':
