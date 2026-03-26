@@ -1,6 +1,6 @@
 Parameter,Value
-MST_ID,0
 ESC_ID,1
+MST_ID,0
 can_br,4
 CTRL_MODE,3
 MAX_SPD,600.0
