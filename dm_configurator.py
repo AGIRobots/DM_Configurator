@@ -39,6 +39,9 @@ class mainGUI(QWidget):
         self.is_reconnecting = False  # 再接続フラグ
         self.last_ports = []
         self.cached_sudo_password = None  # SocketCANパスワードキャッシュ
+        
+        # 起動時に利用可能なデバイスを検出
+        self.detected_interface_type = self.detect_available_interface()
 
 
 
@@ -114,7 +117,6 @@ class mainGUI(QWidget):
         self.interface_update_timer.start(1000)  # 1秒ごとに更新
 
     def connect_widget_signals(self):
-        """ウィジェット値変更時にモーターへ送信するシグナルを接続"""
         # パラメータとウィジェットのマッピング
         widget_params = [
             ("MST_ID", DM_variable.MST_ID, self.MST_ID),
@@ -837,6 +839,29 @@ class mainGUI(QWidget):
                 if index >= 0:
                     self.can_interface.setCurrentIndex(index)
 
+    def detect_available_interface(self):
+        """
+        起動時に利用可能なインターフェースを検出し、優先順位に従って返す
+        優先順位: SocketCAN > SLCAN
+        """
+        socketcan_available = self.get_available_can_interfaces()
+        slcan_available = self.get_available_serial_ports()
+        
+        # SocketCANが利用可能かどうかをチェック（デフォルト以外のものが存在するかどうか）
+        has_socketcan = socketcan_available and socketcan_available[0] != "利用可能なインターフェースなし"
+        
+        # SLCANが利用可能かどうかをチェック（デフォルト以外のものが存在するかどうか）
+        has_slcan = slcan_available and slcan_available[0] != "利用可能なシリアルポートなし"
+        
+        if has_socketcan:
+            print(f"Auto-detected SocketCAN interface: {socketcan_available}")
+            return "SocketCAN"
+        elif has_slcan:
+            print(f"Auto-detected SLCAN serial port: {slcan_available}")
+            return "SLCAN"
+        else:
+            print("No CAN interface detected, defaulting to SLCAN")
+            return None
 
     def get_available_can_interfaces(self):
         """利用可能なCANインターフェースを取得"""
@@ -898,7 +923,6 @@ class mainGUI(QWidget):
                     return True
 
                 # 全て失敗した場合 リトライの選択肢を表示
-                # QMessageBox.warning(self, "エラー", "初期化に失敗しました。パスワードが正しいか確認してください。")
                 retry = QMessageBox.question(
                     self, "エラー", "初期化に失敗しました。パスワードが正しいか確認してください。\n再試行しますか？",
                     QMessageBox.Yes | QMessageBox.No,
@@ -961,7 +985,11 @@ class mainGUI(QWidget):
         layout.addWidget(QLabel("インターフェースタイプ"), row, 0)
         self.interface_type = QComboBox()
         self.interface_type.addItems(["SLCAN", "SocketCAN"])
-        self.interface_type.setCurrentText("SLCAN")
+        # 起動時に検出されたインターフェースタイプを設定
+        if self.detected_interface_type:
+            self.interface_type.setCurrentText(self.detected_interface_type)
+        else:
+            self.interface_type.setCurrentText("SLCAN")
         self.interface_type.setFixedWidth(200)
         layout.addWidget(self.interface_type, row, 1)
         row += 1
@@ -970,9 +998,13 @@ class mainGUI(QWidget):
         self.interface_label = QLabel("シリアルポート")
         layout.addWidget(self.interface_label, row, 0)
         self.can_interface = QComboBox()
-        # SLCAN がデフォルトなのでシリアルポートを初期表示
-        available_ports = self.get_available_serial_ports()
-        self.can_interface.addItems(available_ports)
+        # 検出されたインターフェースタイプに応じて初期表示を変更
+        if self.detected_interface_type == "SocketCAN":
+            available_items = self.get_available_can_interfaces()
+            self.interface_label.setText("CANインターフェース")
+        else:
+            available_items = self.get_available_serial_ports()
+        self.can_interface.addItems(available_items)
         self.can_interface.setFixedWidth(200)
         layout.addWidget(self.can_interface, row, 1)
         row += 1
@@ -1029,7 +1061,7 @@ class mainGUI(QWidget):
         layout.addLayout(btn_layout, row, 0, 1, 2)
         row += 1
         
-                # チェックボックス：接続後に自動読み込み
+        # チェックボックス：接続後に自動読み込み
         label_layout3 = QHBoxLayout()
         label_layout3.addWidget(QLabel("接続後にモーターから設定を自動読み込み"))
         self.auto_read_btn = QCheckBox()
