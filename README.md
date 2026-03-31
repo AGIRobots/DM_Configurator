@@ -1,12 +1,21 @@
 # DM Configurator
 Damiao モーターの設定・書き込みをGUIで行うためのツールです。
 SocketCAN / SLCAN どちらもサポートしています。
+このツールはLinux環境で動作することを想定しています。
+(SLCANはWindowsでも動作する可能性がありますが、未検証です。)
 
 ## 使い方
 
 ### SocketCAN を使用する場合
+#### CANインターフェースの設定 CAN2.0
 ```bash
 sudo ip link set can0 up type can bitrate 1000000
+sudo ip link set can0 up
+```
+
+#### CANインターフェースの設定 CAN FD
+```bash
+sudo ip link set can0 up type can bitrate 1000000 dbitrate 2000000 sample-point 0.8 dsample-point 0.75 fd on
 sudo ip link set can0 up
 ```
 *設定は環境に合わせて変更してください。
@@ -28,6 +37,7 @@ python dm_configurator.py
 4. 書き込み後、モーターから設定を読み出して、変更が反映されていることを確認してください。
 5. 設定をCSVに保存・読み込みも可能です。設定を保存するには「設定を保存」ボタンを押し、ファイル名を指定してください。保存した設定は「設定を読み込み」ボタンから読み込むことができます。
 6. 設定の変更をモーター内に保存するには、「flashメモリに保存」ボタンを押してください。これにより、モーターの電源を切っても設定が保持されます。
+
 
 ## 注意事項
 - モーターのIDなど、すべての値はデータシートに記載されている範囲内で設定してください。

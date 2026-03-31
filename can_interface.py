@@ -20,6 +20,7 @@ class CANInterface(ABC):
         :param bitrate: CAN bitrate (default: 1000000 bps)
         """
         self.bitrate = bitrate
+        self.is_extended_id = False  # Internal use only, auto-detected
         self.bus = None
         self.is_connected = False
     
@@ -46,7 +47,7 @@ class CANInterface(ABC):
         """
         Send CAN message
         
-        :param can_id: CAN message ID
+        :param can_id: CAN message ID (11-bit for standard, 29-bit for extended)
         :param data: Message data (up to 8 bytes)
         :return: True if successful, False otherwise
         """

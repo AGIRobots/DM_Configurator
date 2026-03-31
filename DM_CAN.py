@@ -91,7 +91,7 @@ class MotorControl:
         self.data_save = bytes()  # save data
         if not self.can_interface.connect():
             print(f"Failed to connect to CAN interface: {interface}")
-            self.can_interface = None           
+            self.can_interface = None
 
     def controlMIT(self, DM_Motor, kp: float, kd: float, q: float, dq: float, tau: float):
         """
@@ -462,10 +462,8 @@ class MotorControl:
         :return: パラメータの値
         """
         max_retries = 20
-        retry_interval = 0.05  #retry times
         self.__read_RID_param(Motor, RID)
         for _ in range(max_retries):
-            sleep(retry_interval)
             self.recv_set_param_data()
             if Motor.SlaveID in self.motors_map:
                 if RID in self.motors_map[Motor.SlaveID].temp_param_dict:

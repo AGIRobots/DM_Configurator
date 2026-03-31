@@ -33,10 +33,8 @@ class SocketCANInterface(CANInterface):
             self.bus = can.Bus(interface='socketcan', channel=self.interface, 
                              bitrate=self.bitrate)
             self.is_connected = True
-            print(f"Connected to Socket CAN interface: {self.interface}")
             return True
         except Exception as e:
-            print(f"Socket CAN connection error: {e}")
             self.bus = None
             self.is_connected = False
             return False
@@ -63,7 +61,7 @@ class SocketCANInterface(CANInterface):
         """
         Send CAN message
         
-        :param can_id: CAN message ID
+        :param can_id: CAN message ID (11-bit for standard, 29-bit for extended)
         :param data: Message data (up to 8 bytes)
         :return: True if successful, False otherwise
         """
@@ -72,7 +70,7 @@ class SocketCANInterface(CANInterface):
             return False
         
         try:
-            msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=False)
+            msg = can.Message(arbitration_id=can_id, data=data, is_extended_id=self.is_extended_id)
             self.bus.send(msg)
             return True
         except Exception as e:
@@ -95,5 +93,4 @@ class SocketCANInterface(CANInterface):
                 return (msg.arbitration_id, bytes(msg.data))
             return None
         except Exception as e:
-            print(f"Failed to receive CAN message: {e}")
             return None

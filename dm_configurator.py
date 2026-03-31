@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QComboBox,
     QSlider, QSpinBox, QCheckBox, QGridLayout, QGroupBox,
     QVBoxLayout, QHBoxLayout, QDoubleSpinBox, QScrollArea, QFrame,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QLineEdit
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -29,6 +29,7 @@ class mainGUI(QWidget):
         self.motor_control = None
         self.is_connected = False
         self.is_connecting = False  # 接続初期化中フラグ
+        self.is_reconnecting = False  # 再接続フラグ
         self.last_ports = []
 
 
@@ -140,7 +141,10 @@ class mainGUI(QWidget):
         ]
         
         for param_name, rid, widget in widget_params:
-            if isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
+            if isinstance(widget, QLineEdit) and param_name in ("ESC_ID", "MST_ID"):
+                # ESC_ID, MST_ID は QLineEdit なので editingFinished を使用
+                widget.editingFinished.connect(lambda p=param_name, r=rid, w=widget: self.on_hex_value_changed(p, r, w.text()))
+            elif isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
                 # editingFinished シグナルを使用して Enter キープレス時に送信
                 widget.editingFinished.connect(lambda p=param_name, r=rid, w=widget: self.on_widget_value_changed(p, r, w.value()))
             elif isinstance(widget, QComboBox) and param_name == "can_br":
@@ -173,17 +177,35 @@ class mainGUI(QWidget):
                 return
                 
             bitrate_text = self.bitrate.currentText()
-            # ボーレート文字列を数値に変換（\"N: XXX Kbps\" 形式から数値を抽出）
+            # ボーレート文字列を数値に変換
             bitrate_map = {
-                "0: 125 Kbps": 125000,
-                "1: 200 Kbps": 200000,
-                "2: 250 Kbps": 250000,
-                "3: 500 Kbps": 500000,
-                "4: 1 Mbps": 1000000
+                "0: 125kbps": 125000,
+                "1: 200kbps": 200000,
+                "2: 250kbps": 250000,
+                "3: 500kbps": 500000,
+                "4: 1Mbps": 1000000,
+                "5: 2Mbps": 2000000,
+                "6: 2.5Mbps": 2500000,
+                "7: 3.2Mbps": 3200000,
+                "8: 4Mbps": 4000000,
+                "9: 5Mbps": 5000000
             }
             bitrate = bitrate_map.get(bitrate_text, 1000000)
             motor_type_text = self.motor_type.currentText()
-            motor_id = self.motor_id.value()
+            
+            # motor_id を16進数形式から数値に変換
+            try:
+                motor_id_hex = self.motor_id.text()
+                if motor_id_hex.startswith("0x") or motor_id_hex.startswith("0X"):
+                    motor_id = int(motor_id_hex, 16)
+                else:
+                    motor_id = int(motor_id_hex, 16)
+            except ValueError:
+                print(f"Error: Invalid motor ID format: {motor_id_hex}")
+                self.is_connecting = False
+                self.set_ui_enabled(True)
+                QMessageBox.critical(self, "エラー", f"モーターID形式が無効です: {motor_id_hex}\n0xXXX形式で入力してください。")
+                return
             
             # モータータイプのマッピング（文字列をインデックスに変換）
             motor_type_map = {
@@ -210,7 +232,8 @@ class mainGUI(QWidget):
             
             if esc_id is None:
                 print("Error: Failed to read ESC_ID from motor - connection verification failed")
-                self.motor_control.can_interface.disconnect()
+                if self.motor_control and self.motor_control.can_interface:
+                    self.motor_control.can_interface.disconnect()
                 self.motor_control = None
                 self.is_connected = False
                 self.is_connecting = False
@@ -219,7 +242,7 @@ class mainGUI(QWidget):
                 QMessageBox.critical(self, "接続失敗", "モーターからESC IDを読み出せませんでした。接続を確認してください。")
                 return
             
-            print(f"Motor ESC_ID verified: {esc_id}")
+            print(f"Motor ESC_ID verified: 0x{esc_id:03X}")
             
             # can_br パラメータを読み出して接続セクションを同期
             try:
@@ -228,7 +251,9 @@ class mainGUI(QWidget):
                     can_br_int = int(can_br_value)
                     # 接続セクションの bitrate を同期
                     self.bitrate.blockSignals(True)
-                    combo_text = f"{can_br_int}: {['125 Kbps', '200 Kbps', '250 Kbps', '500 Kbps', '1 Mbps'][can_br_int]}"
+                    bitrate_labels = ['125kbps', '200kbps', '250kbps', '500kbps', '1Mbps', '2Mbps', '2.5Mbps', '3.2Mbps', '4Mbps', '5Mbps']
+                    bitrate_label = bitrate_labels[can_br_int] if can_br_int < len(bitrate_labels) else '1Mbps'
+                    combo_text = f"{can_br_int}: {bitrate_label}"
                     self.bitrate.setCurrentText(combo_text)
                     self.bitrate.blockSignals(False)
                     print(f"Motor can_br synchronized: {combo_text}")
@@ -248,6 +273,13 @@ class mainGUI(QWidget):
             self.disconnect_btn.setEnabled(True)
             self.set_widgets_enabled(True)  # パラメータ編集を有効化
             print(f"Connected to {interface} ({interface_type}) - Motor: {motor_type_text} (ID: {motor_id})")
+            
+            # 接続後に自動読み込みが有効な場合は設定を読み込む（再接続時はスキップ）
+            if self.auto_read_btn.isChecked() and not self.is_reconnecting:
+                QTimer.singleShot(500, self.on_motor_read)
+            
+            # 再接続フラグをリセット
+            self.is_reconnecting = False
         except Exception as e:
             print(f"Connection error: {e}")
             import traceback
@@ -264,6 +296,58 @@ class mainGUI(QWidget):
             self.update_connection_indicator()
             self.set_ui_enabled(True)
             QMessageBox.critical(self, "接続失敗", f"モーターに接続できませんでした。\n{str(e)}")
+
+    def on_hex_value_changed(self, param_name, rid, hex_text):
+        """16進数値(0xXXX形式)が変更されたときにモーターへ送信"""
+        # ENTERキー送信がOFFの場合はスキップ
+        if not self.enter_send_btn.isChecked():
+            return
+        
+        # 接続初期化中または未接続の場合はスキップ
+        if self.is_connecting or not self.is_connected or self.motor_control is None:
+            return
+        
+        try:
+            # 0xXXX形式をチェック
+            if not hex_text.startswith("0x") and not hex_text.startswith("0X"):
+                print(f"Invalid hex format: {hex_text}. Expected 0xXXX format.")
+                return
+            
+            value = int(hex_text, 16)
+            if value < 0 or value > 0x7FF:
+                print(f"Value out of range: {hex_text}. Expected 0x000-0x7FF.")
+                return
+            
+            motor = list(self.motor_control.motors_map.values())[0]
+            self.motor_control.change_motor_param(motor, rid, value)
+            print(f"Sent {param_name}: {hex_text} ({value})")
+            
+            # 接続セクションのID値を同期
+            try:
+                if param_name == "ESC_ID":
+                    self.motor_id.blockSignals(True)
+                    self.motor_id.setText(f"0x{value:03X}")
+                    self.motor_id.blockSignals(False)
+                    print(f"Updated connection motor_id to 0x{value:03X}")
+                elif param_name == "MST_ID":
+                    self.feed_back_id.blockSignals(True)
+                    self.feed_back_id.setText(f"0x{value:03X}")
+                    self.feed_back_id.blockSignals(False)
+                    print(f"Updated connection feed_back_id to 0x{value:03X}")
+            except Exception as e:
+                print(f"Error updating widget values: {e}")
+        except ValueError:
+            print(f"Invalid hex value: {hex_text}")
+            return
+        
+        # 自動再接続が有効な場合は再接続
+        if self.auto_reconnect_btn.isChecked():
+            print(f"{param_name} changed, reconnecting with new ID...")
+            self.is_reconnecting = True
+            self.on_disconnect()
+            QTimer.singleShot(1000, self.on_connect)
+        else:
+            print(f"{param_name} changed (auto-reconnect disabled)")
 
     def on_disconnect(self):
         """切断ボタン押下時の処理"""
@@ -294,6 +378,10 @@ class mainGUI(QWidget):
 
     def on_widget_value_changed(self, param_name, rid, value):
         """ウィジェットの値が変更されたときにモーターへ即座に送信"""
+        # ENTERキー送信がOFFの場合はスキップ
+        if not self.enter_send_btn.isChecked():
+            return
+        
         # 接続初期化中または未接続の場合はスキップ
         if self.is_connecting or not self.is_connected or self.motor_control is None:
             return
@@ -306,22 +394,23 @@ class mainGUI(QWidget):
                 try:
                     if param_name == "ESC_ID":
                         self.motor_id.blockSignals(True)
-                        self.motor_id.setValue(int(value))
+                        self.motor_id.setText(f"0x{int(value):03X}")
                         self.motor_id.blockSignals(False)
-                        print(f"Updated connection motor_id to {value}")
+                        print(f"Updated connection motor_id to 0x{int(value):03X}")
                     elif param_name == "MST_ID":
                         self.feed_back_id.blockSignals(True)
-                        self.feed_back_id.setValue(int(value))
+                        self.feed_back_id.setText(f"0x{int(value):03X}")
                         self.feed_back_id.blockSignals(False)
-                        print(f"Updated connection feed_back_id to {value}")
+                        print(f"Updated connection feed_back_id to 0x{int(value):03X}")
                 except Exception as e:
                     print(f"Error updating widget values: {e}")
             except Exception as e:
                 print(f"Error sending {param_name}: {e}")
             
             # 自動再接続が有効な場合は再接続
-            if self.auto_reconnect_checkbox.isChecked():
+            if self.auto_reconnect_btn.isChecked():
                 print(f"{param_name} changed, reconnecting with new ID...")
+                self.is_reconnecting = True
                 self.on_disconnect()
                 QTimer.singleShot(1000, self.on_connect)
             else:
@@ -342,13 +431,35 @@ class mainGUI(QWidget):
         if self.is_connecting or not self.is_connected or self.motor_control is None:
             return
         
-        # can_br の ComboBox から数値を抽出（例："0: 125 Kbps" -> 0）
+        # can_br の場合、SLCAN接続時に1Mbps以上が選択された場合は警告を表示
+        if param_name == "can_br":
+            interface_type = self.interface_type.currentText()
+            if interface_type.lower() == "slcan":
+                # SLCAN対応ビットレート：0-4（125Kbps, 250Kbps, 500Kbps, 1Mbps）
+                bitrate_index = int(text.split(":")[0])
+                if bitrate_index > 4:
+                    reply = QMessageBox.question(
+                        self,
+                        "警告",
+                        f"SLCAN接続時に{text}は実質的に対応していません。\nそれでも設定しますか？",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    if reply == QMessageBox.No:
+                        # キャンセルされたので、前の値に戻す
+                        self.can_br.blockSignals(True)
+                        # 最後の有効な値に戻す（0-4の範囲で最大値）
+                        self.can_br.setCurrentText("4: 1Mbps")
+                        self.can_br.blockSignals(False)
+                        print(f"Cancelled setting {text} on SLCAN")
+                        return
+        
+        # can_br の ComboBox から数値を抽出（例："0: 125kbps" -> 0）
         try:
             value = int(text.split(":")[0])
             motor = list(self.motor_control.motors_map.values())[0]
             self.motor_control.change_motor_param(motor, rid, value)
             print(f"Sent {param_name}: {value}")
-            print(f"Saved {param_name} to flash memory")
             # 接続セクションの bitrate を同期
             self.bitrate.blockSignals(True)
             self.bitrate.setCurrentText(text)
@@ -358,8 +469,14 @@ class mainGUI(QWidget):
             print(f"Error sending {param_name}: {e}")
         
         # 自動再接続が有効な場合は再接続
-        if self.auto_reconnect_checkbox.isChecked():
+        if self.auto_reconnect_btn.isChecked():
             print(f"{param_name} changed, reconnecting...")
+            self.is_reconnecting = True
+            # 接続設定セクションのボーレートを通信設定の値に同期
+            if param_name == "can_br":
+                self.bitrate.blockSignals(True)
+                self.bitrate.setCurrentText(text)
+                self.bitrate.blockSignals(False)
             self.on_disconnect()
             # 短い遅延後に再接続
             QTimer.singleShot(1000, self.on_connect)
@@ -459,25 +576,32 @@ class mainGUI(QWidget):
                     continue
                 value = self.motor_control.read_motor_param(motor, rid)
                 if value is not None:
-                    if isinstance(widget, QComboBox) and param_name == "can_br":
+                    if isinstance(widget, QLineEdit) and param_name in ("ESC_ID", "MST_ID"):
+                        # ESC_ID, MST_ID は QLineEdit なので16進数形式で設定
+                        value_int = int(value)
+                        widget.setText(f"0x{value_int:03X}")
+                        print(f"Read {param_name}: 0x{value_int:03X}")
+                    elif isinstance(widget, QComboBox) and param_name == "can_br":
                         # can_br は ComboBox なので対応するテキストを選択
                         value_int = int(value)
-                        combo_text = f"{value_int}: {['125 Kbps', '200 Kbps', '250 Kbps', '500 Kbps', '1 Mbps'][value_int]}"
-                        widget.setCurrentText(combo_text)
-                        # 接続セクションの bitrate も同期
-                        self.bitrate.blockSignals(True)
-                        bitrate_text = f"{['125 Kbps', '200 Kbps', '250 Kbps', '500 Kbps', '1 Mbps'][value_int]}"
-                        self.bitrate.setCurrentText(bitrate_text)
-                        self.bitrate.blockSignals(False)
+                        bitrate_names = ['125 Kbps', '200 Kbps', '250 Kbps', '500 Kbps', '1 Mbps', '2 Mbps', '3 Mbps', '4 Mbps', '5 Mbps']
+                        if value_int < len(bitrate_names):
+                            combo_text = f"{value_int}: {bitrate_names[value_int]}"
+                            widget.setCurrentText(combo_text)
+                            # 接続セクションの bitrate も同期
+                            self.bitrate.blockSignals(True)
+                            self.bitrate.setCurrentText(bitrate_names[value_int])
+                            self.bitrate.blockSignals(False)
+                        else:
+                            print(f"Warning: can_br value {value_int} out of range")
                     else:
                         widget.setValue(value)
-                    print(f"Read {param_name}: {value}")
+                        print(f"Read {param_name}: {value}")
             
             QMessageBox.information(self, "成功", "モーターパラメータを読み込みました")
             print("Motor parameters read successfully")
         except Exception as e:
-            # QMessageBox.critical(self, "エラー", f"読み込みエラー: {e}")
-            QMessageBox.critical(self, "エラーが発生しました。再度読み込んでください。")
+            QMessageBox.critical(self, "エラー", f"読み込みエラー: {e}")
             print(f"Motor read error: {e}")
             import traceback
             traceback.print_exc()
@@ -520,17 +644,34 @@ class mainGUI(QWidget):
             ]
             
             for param_name, rid, widget in write_params:
-                if isinstance(widget, QComboBox) and param_name == "can_br":
+                if isinstance(widget, QLineEdit) and param_name in ("ESC_ID", "MST_ID"):
+                    # ESC_ID, MST_ID は QLineEdit なので16進数値を抽出
+                    hex_text = widget.text()
+                    try:
+                        value = int(hex_text, 16)
+                        success = self.motor_control.change_motor_param(motor, rid, value)
+                        if success:
+                            print(f"Wrote {param_name}: {hex_text} ({value})")
+                        else:
+                            print(f"Failed to write {param_name}")
+                    except ValueError:
+                        print(f"Invalid hex value for {param_name}: {hex_text}")
+                elif isinstance(widget, QComboBox) and param_name == "can_br":
                     # can_br は ComboBox なので currentText から数値を抽出
                     text = widget.currentText()
                     value = int(text.split(":")[0])
+                    success = self.motor_control.change_motor_param(motor, rid, value)
+                    if success:
+                        print(f"Wrote {param_name}: {value}")
+                    else:
+                        print(f"Failed to write {param_name}")
                 else:
                     value = widget.value()
-                success = self.motor_control.change_motor_param(motor, rid, value)
-                if success:
-                    print(f"Wrote {param_name}: {value}")
-                else:
-                    print(f"Failed to write {param_name}")
+                    success = self.motor_control.change_motor_param(motor, rid, value)
+                    if success:
+                        print(f"Wrote {param_name}: {value}")
+                    else:
+                        print(f"Failed to write {param_name}")
             
             QMessageBox.information(self, "成功", "モーターパラメータを書き込みました")
             print("Motor parameters written successfully")
@@ -583,13 +724,21 @@ class mainGUI(QWidget):
                     
                     # settings_dictから値を書き込み
                     for key, widget in self.settings_dict.items():
-                        if isinstance(widget, QComboBox) and key == "can_br":
+                        if isinstance(widget, QLineEdit) and key in ("ESC_ID", "MST_ID"):
+                            # ESC_ID, MST_ID は QLineEdit なので16進数値を抽出
+                            hex_text = widget.text()
+                            try:
+                                value = int(hex_text, 16)
+                                writer.writerow([key, hex_text])
+                            except ValueError:
+                                writer.writerow([key, hex_text])
+                        elif isinstance(widget, QComboBox) and key == "can_br":
                             # can_br は ComboBox なので currentText から数値を抽出
                             text = widget.currentText()
                             value = int(text.split(":")[0])
+                            writer.writerow([key, value])
                         else:
-                            value = widget.value()
-                        writer.writerow([key, value])
+                            writer.writerow([key, widget.value()])
                 
                 QMessageBox.information(self, "成功", f"設定を保存しました: {file_path}")
                 print(f"Configuration saved to {file_path}")
@@ -622,11 +771,23 @@ class mainGUI(QWidget):
                             if key in self.settings_dict:
                                 try:
                                     widget = self.settings_dict[key]
-                                    if isinstance(widget, QComboBox) and key == "can_br":
+                                    if isinstance(widget, QLineEdit) and key in ("ESC_ID", "MST_ID"):
+                                        # ESC_ID, MST_ID は QLineEdit なので0x形式で設定
+                                        if value.startswith("0x") or value.startswith("0X"):
+                                            widget.setText(value)
+                                        else:
+                                            # 16進数値の場合は0xプレフィックスを追加
+                                            value_int = int(value, 16)
+                                            widget.setText(f"0x{value_int:03X}")
+                                    elif isinstance(widget, QComboBox) and key == "can_br":
                                         # can_br は ComboBox なので対応するテキストを選択
                                         value_int = int(float(value))
-                                        combo_text = f"{value_int}: {['125 Kbps', '200 Kbps', '250 Kbps', '500 Kbps', '1 Mbps'][value_int]}"
-                                        widget.setCurrentText(combo_text)
+                                        bitrate_names = ['125 Kbps', '200 Kbps', '250 Kbps', '500 Kbps', '1 Mbps', '2 Mbps', '3 Mbps', '4 Mbps', '5 Mbps']
+                                        if value_int < len(bitrate_names):
+                                            combo_text = f"{value_int}: {bitrate_names[value_int]}"
+                                            widget.setCurrentText(combo_text)
+                                        else:
+                                            print(f"Warning: can_br value {value_int} out of range")
                                     else:
                                         widget.setValue(float(value))
                                     print(f"Loaded {key}: {value}")
@@ -762,9 +923,10 @@ class mainGUI(QWidget):
         # CANビットレート
         layout.addWidget(QLabel("CAN baudrate"), row, 0)
         self.bitrate = QComboBox()
-        self.bitrate.addItems(["0: 125 Kbps", "1: 200 Kbps", "2: 250 Kbps", "3: 500 Kbps", "4: 1 Mbps"])
-        self.bitrate.setCurrentText("4: 1 Mbps")
+        self.bitrate.addItems(["0: 125kbps", "1: 200kbps", "2: 250kbps", "3: 500kbps", "4: 1Mbps", "5: 2Mbps", "6: 2.5Mbps", "7: 3.2Mbps", "8: 4Mbps", "9: 5Mbps"])
+        self.bitrate.setCurrentText("4: 1Mbps")
         layout.addWidget(self.bitrate, row, 1)
+        self.update_bitrate_options()
         row += 1
         
         # モータータイプ
@@ -776,19 +938,19 @@ class mainGUI(QWidget):
         
         # モーターID
         layout.addWidget(QLabel("ESC_ID (Motor ID)"), row, 0)
-        self.motor_id = QSpinBox()
-        self.motor_id.setRange(0, 127)
-        self.motor_id.setValue(1)
-        self.motor_id.setDisplayIntegerBase(16)
+        self.motor_id = QLineEdit()
+        self.motor_id.setText("0x001")
+        self.motor_id.setMaxLength(7)  # "0x" + 5文字
+        self.motor_id.setPlaceholderText("0xXXX")
         layout.addWidget(self.motor_id, row, 1)
         row += 1
 
         # feed back ID
         layout.addWidget(QLabel("feed back ID"), row, 0)
-        self.feed_back_id = QSpinBox()
-        self.feed_back_id.setRange(0, 127)
-        self.feed_back_id.setValue(0)
-        self.feed_back_id.setDisplayIntegerBase(16) 
+        self.feed_back_id = QLineEdit()
+        self.feed_back_id.setText("0x000")
+        self.feed_back_id.setMaxLength(7)  # "0x" + 5文字
+        self.feed_back_id.setPlaceholderText("0xXXX")
         layout.addWidget(self.feed_back_id, row, 1)
         row += 1
         
@@ -810,6 +972,16 @@ class mainGUI(QWidget):
         layout.addLayout(btn_layout, row, 0, 1, 2)
         row += 1
         
+                # チェックボックス：接続後に自動読み込み
+        label_layout3 = QHBoxLayout()
+        label_layout3.addWidget(QLabel("接続後にモーターから設定を自動読み込み"))
+        self.auto_read_btn = QCheckBox()
+        self.auto_read_btn.setChecked(True)
+        label_layout3.addWidget(self.auto_read_btn)
+        label_layout3.addStretch()
+        layout.addLayout(label_layout3, row, 0, 1, 2)
+        row += 1
+
         layout.setRowStretch(row, 1)
         group.setLayout(layout)
         return group
@@ -817,6 +989,31 @@ class mainGUI(QWidget):
     def on_interface_type_changed(self):
         """インターフェースタイプが変更された時の処理"""
         self.update_interface_display()
+        self.update_bitrate_options()
+    
+    def update_bitrate_options(self):
+        """インターフェースタイプに応じてビットレートオプションを更新"""
+        interface_type = self.interface_type.currentText()
+        current_text = self.bitrate.currentText()
+        
+        self.bitrate.blockSignals(True)
+        self.bitrate.clear()
+        
+        if interface_type.lower() == "slcan":
+            # SLCAN対応ビットレート：0-4（125kbps, 200kbps, 250kbps, 500kbps, 1Mbps）
+            self.bitrate.addItems(["0: 125kbps", "1: 200kbps", "2: 250kbps", "3: 500kbps", "4: 1Mbps"])
+            self.bitrate.setCurrentText("4: 1Mbps")
+        else:
+            # SocketCAN対応ビットレート（全オプション）
+            self.bitrate.addItems(["0: 125kbps", "1: 200kbps", "2: 250kbps", "3: 500kbps", "4: 1Mbps", "5: 2Mbps", "6: 2.5Mbps", "7: 3.2Mbps", "8: 4Mbps", "9: 5Mbps"])
+            # 前の値が存在すればそれを復元、なければ1Mbpsをデフォルトに
+            index = self.bitrate.findText(current_text)
+            if index >= 0:
+                self.bitrate.setCurrentIndex(index)
+            else:
+                self.bitrate.setCurrentText("4: 1Mbps")
+        
+        self.bitrate.blockSignals(False)
     
     def update_interface_display(self):
         """インターフェースタイプに応じてラベルと選択肢を更新"""
@@ -849,35 +1046,51 @@ class mainGUI(QWidget):
 
         row = 0
 
-        # ESC_ID [0, 0x7FF]
+        # ESC_ID [0, 0x7FF] - 0xXXX形式
         layout.addWidget(QLabel("ESC_ID"), row, 0)
-        self.ESC_ID = QSpinBox()
-        self.ESC_ID.setRange(0, 0x7FF)
-        self.ESC_ID.setDisplayIntegerBase(16)
+        self.ESC_ID = QLineEdit()
+        self.ESC_ID.setText("0x001")
+        self.ESC_ID.setMaxLength(7)  # "0x" + 5文字
+        self.ESC_ID.setPlaceholderText("0xXXX")
         layout.addWidget(self.ESC_ID, row, 1)
         self.settings_dict["ESC_ID"] = self.ESC_ID
         row += 1
-        # MST_ID [0, 0x7FF]
+        # MST_ID [0, 0x7FF] - 0xXXX形式
         layout.addWidget(QLabel("MST_ID (feed back ID)"), row, 0)
-        self.MST_ID = QSpinBox()
-        self.MST_ID.setRange(0, 0x7FF)
-        self.MST_ID.setDisplayIntegerBase(16)
+        self.MST_ID = QLineEdit()
+        self.MST_ID.setText("0x000")
+        self.MST_ID.setMaxLength(7)  # "0x" + 5文字
+        self.MST_ID.setPlaceholderText("0xXXX")
         layout.addWidget(self.MST_ID, row, 1)
         self.settings_dict["MST_ID"] = self.MST_ID
         row += 1
 
         
-        layout.addWidget(QLabel("CANボーレート (0-4)"), row, 0)
+        layout.addWidget(QLabel("CANボーレート (0-9)"), row, 0)
         self.can_br = QComboBox()
-        self.can_br.addItems(["0: 125 Kbps", "1: 200 Kbps", "2: 250 Kbps", "3: 500 Kbps", "4: 1 Mbps"])
-        self.can_br.setCurrentText("4: 1 Mbps")
+        self.can_br.addItems(["0: 125kbps", "1: 200kbps", "2: 250kbps", "3: 500kbps", "4: 1Mbps", "5: 2Mbps", "6: 2.5Mbps", "7: 3.2Mbps", "8: 4Mbps", "9: 5Mbps"])
+        self.can_br.setCurrentText("4: 1Mbps")
         layout.addWidget(self.can_br, row, 1)
         self.settings_dict["can_br"] = self.can_br
         row += 1
+        # チェックボックス：変更時に自動再接続
+        label_layout1 = QHBoxLayout()
+        label_layout1.addWidget(QLabel("変更時に自動再接続"))
+        self.auto_reconnect_btn = QCheckBox()
+        self.auto_reconnect_btn.setChecked(True)
+        label_layout1.addWidget(self.auto_reconnect_btn)
+        label_layout1.addStretch()
+        layout.addLayout(label_layout1, row, 0, 1, 2)
+        row += 1
 
-        self.auto_reconnect_checkbox = QCheckBox("変更時に自動再接続")
-        self.auto_reconnect_checkbox.setChecked(True)
-        layout.addWidget(self.auto_reconnect_checkbox, row, 0, 1, 2)
+        # チェックボックス：ENTERキーで値を送信
+        label_layout2 = QHBoxLayout()
+        label_layout2.addWidget(QLabel("ENTERキーで送信"))
+        self.enter_send_btn = QCheckBox()
+        self.enter_send_btn.setChecked(True)
+        label_layout2.addWidget(self.enter_send_btn)
+        label_layout2.addStretch()
+        layout.addLayout(label_layout2, row, 0, 1, 2)
         row += 1
 
         layout.setRowStretch(row + 1, 1) # 残りのスペースを伸縮
