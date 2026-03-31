@@ -2,13 +2,14 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QComboBox,
     QSlider, QSpinBox, QCheckBox, QGridLayout, QGroupBox,
     QVBoxLayout, QHBoxLayout, QDoubleSpinBox, QScrollArea, QFrame,
-    QFileDialog, QMessageBox, QLineEdit
+    QFileDialog, QMessageBox, QLineEdit, QInputDialog
 )
 from PySide6.QtCore import Qt, QTimer
 
 import sys
 import csv
 import os
+import subprocess
 try:
     from DM_CAN import MotorControl, Motor, Control_Type, DM_variable
 except ImportError:
@@ -17,12 +18,18 @@ except ImportError:
     Control_Type = None
     DM_variable = None
 
+try:
+    from socketcan_initializer import SocketCANInitializer, CANConfig
+except ImportError:
+    SocketCANInitializer = None
+    CANConfig = None
+
+
 class mainGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("DM config tool")
         self.resize(1200, 800)
-        # メインレイアウト（垂直）
         self.main_layout = QVBoxLayout(self)
 
         # 接続管理
@@ -31,10 +38,10 @@ class mainGUI(QWidget):
         self.is_connecting = False  # 接続初期化中フラグ
         self.is_reconnecting = False  # 再接続フラグ
         self.last_ports = []
+        self.cached_sudo_password = None  # SocketCANパスワードキャッシュ
 
 
 
-        # スクロールエリアの追加（画面が小さくなってもスクロール可能にする）
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.NoFrame)
@@ -48,7 +55,6 @@ class mainGUI(QWidget):
         self.settings_dict = {}
 
         # 2. 各セクションの作成とグリッドへの配置
-        # (行, 列) の位置は画像に基づいています。
 
         # --- 1行目 ---
         # (0, 0) 接続 (Connection)
@@ -62,7 +68,6 @@ class mainGUI(QWidget):
 
         # --- 2行目 ---
         # (1, 0) 各種ボタン (Action Buttons)
-        # 画像では2行目の左下エリアに配置
         self.central_grid.addWidget(self.create_action_buttons_group(), 1, 0)
         
         # (1, 1) 保護まわり (Protection)
@@ -75,14 +80,12 @@ class mainGUI(QWidget):
         self.central_grid.setColumnStretch(0, 1)
         self.central_grid.setColumnStretch(1, 2)
         self.central_grid.setColumnStretch(2, 1)
-        # 各行の伸縮比率
         self.central_grid.setRowStretch(0, 1)
         self.central_grid.setRowStretch(1, 1)
 
         self.scroll_area.setWidget(self.central_widget)
         self.main_layout.addWidget(self.scroll_area)
 
-        # ボタンのシグナルを接続
         self.setup_button_signals()
 
     def setup_button_signals(self):
@@ -142,13 +145,10 @@ class mainGUI(QWidget):
         
         for param_name, rid, widget in widget_params:
             if isinstance(widget, QLineEdit) and param_name in ("ESC_ID", "MST_ID"):
-                # ESC_ID, MST_ID は QLineEdit なので editingFinished を使用
                 widget.editingFinished.connect(lambda p=param_name, r=rid, w=widget: self.on_hex_value_changed(p, r, w.text()))
             elif isinstance(widget, QSpinBox) or isinstance(widget, QDoubleSpinBox):
-                # editingFinished シグナルを使用して Enter キープレス時に送信
                 widget.editingFinished.connect(lambda p=param_name, r=rid, w=widget: self.on_widget_value_changed(p, r, w.value()))
             elif isinstance(widget, QComboBox) and param_name == "can_br":
-                # can_br は ComboBox なので currentTextChanged を使用
                 widget.currentTextChanged.connect(lambda text, p=param_name, r=rid: self.on_combo_value_changed(p, r, text))
 
     def on_connect(self):
@@ -214,6 +214,13 @@ class mainGUI(QWidget):
                 "DM10010": 8, "DMH3510": 9, "DMG62150": 10, "DMH6220": 11
             }
             motor_type_idx = motor_type_map.get(motor_type_text, 0)
+            
+            # SocketCANの場合は初期化を試みる
+            if interface_type == "socketcan":
+                if not self.init_socketcan(interface, bitrate):
+                    self.is_connecting = False
+                    self.set_ui_enabled(True)
+                    return
             
             self.motor_control = MotorControl(interface, bitrate, interface_type)
             
@@ -844,6 +851,86 @@ class mainGUI(QWidget):
             print(f"Error detecting CAN interfaces: {e}")
         
         return sorted(interfaces) if interfaces else ["利用可能なインターフェースなし"]
+    
+    
+    def init_socketcan(self, interface, bitrate):
+        """接続時にSocketCANを初期化（必要な場合のみパスワード入力、セッション中は再利用）
+        """
+        try:
+            if SocketCANInitializer is None or CANConfig is None:
+                QMessageBox.warning(self, "エラー", "socketcan_initializer モジュールが見つかりません。")
+                return False
+            
+            initializer = SocketCANInitializer(interface)
+            
+            # 2Mbps以上のビットレートの場合はCANFDを有効にする
+            is_canfd = bitrate >= 2000000
+            if is_canfd:
+                dbitrate = bitrate
+                bitrate = 1000000  # ビットレートは1Mbps
+                config = CANConfig(bitrate=bitrate, dbitrate=dbitrate, fd=is_canfd)
+            else:         
+                config = CANConfig(bitrate=bitrate, fd=is_canfd)
+            
+            if is_canfd:
+                print(f"CANFD mode enabled for bitrate {bitrate} bps")
+            
+            # すでに権限がある場合
+            success = initializer.apply(config, use_sudo=True)
+            if success:
+                print(f"SocketCAN {interface} initialized successfully at {bitrate} bps")
+                return True
+            
+            # まずキャッシュされたパスワードで試行
+            print(f"Attempting SocketCAN initialization with cached password...")
+            def cached_password_callback():
+                return self.cached_sudo_password
+            success = initializer.apply(config, use_sudo=True, password_callback=cached_password_callback)
+            if success:
+                print(f"SocketCAN {interface} initialized successfully with cached password at {bitrate} bps")
+                return True
+            else:
+                print("SocketCAN initialization failed with cached password. Clearing cache...")
+                self.cached_sudo_password = None  # キャッシュをクリア
+            
+            # パスワード入力が必要な場合
+            print(f"SocketCAN initialization requires password. Prompting user...")
+            password, ok = QInputDialog.getText(
+                self, 
+                "SocketCAN初期化", 
+                "SocketCANの初期化に管理者権限が必要です。\nパスワードを入力してください：",
+                QLineEdit.Password
+            )
+            
+            if not ok or not password:
+                print("SocketCAN initialization cancelled by user")
+                return False
+            
+            def password_input_callback():
+                return password
+            
+            # パスワード付きで試行
+            print(f"Attempting SocketCAN initialization with password...")
+            success = initializer.apply(config, use_sudo=True, password_callback=password_input_callback)
+            
+            if success:
+                print(f"SocketCAN {interface} initialized successfully with password at {bitrate} bps")
+                # パスワードをキャッシュ
+                self.cached_sudo_password = password
+                return True
+            else:
+                print("SocketCAN initialization failed with password")
+                QMessageBox.warning(
+                    self, 
+                    "エラー", 
+                    f"SocketCANの初期化に失敗しました。パスワードが正しいか確認してください。"
+                )
+                return False
+                
+        except Exception as e:
+            print(f"SocketCAN init error: {e}")
+            QMessageBox.critical(self, "エラー", f"SocketCAN初期化エラー: {e}")
+            return False
     
     def get_available_serial_ports(self):
         """利用可能なシリアルポートを取得"""
