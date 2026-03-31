@@ -854,83 +854,63 @@ class mainGUI(QWidget):
     
     
     def init_socketcan(self, interface, bitrate):
-        """接続時にSocketCANを初期化（必要な場合のみパスワード入力、セッション中は再利用）
-        """
-        try:
+            """SocketCANを初期化（必要に応じてパスワード入力・キャッシュ）"""
             if SocketCANInitializer is None or CANConfig is None:
-                QMessageBox.warning(self, "エラー", "socketcan_initializer モジュールが見つかりません。")
+                QMessageBox.warning(self, "エラー", "必要なモジュールが見つかりません。")
                 return False
-            
-            initializer = SocketCANInitializer(interface)
-            
-            # 2Mbps以上のビットレートの場合はCANFDを有効にする
-            is_canfd = bitrate >= 2000000
-            if is_canfd:
-                dbitrate = bitrate
-                bitrate = 1000000  # ビットレートは1Mbps
-                config = CANConfig(bitrate=bitrate, dbitrate=dbitrate, fd=is_canfd)
-            else:         
-                config = CANConfig(bitrate=bitrate, fd=is_canfd)
-            
-            if is_canfd:
-                print(f"CANFD mode enabled for bitrate {bitrate} bps")
-            
-            # すでに権限がある場合
-            success = initializer.apply(config, use_sudo=True)
-            if success:
-                print(f"SocketCAN {interface} initialized successfully at {bitrate} bps")
-                return True
-            
-            # まずキャッシュされたパスワードで試行
-            print(f"Attempting SocketCAN initialization with cached password...")
-            def cached_password_callback():
-                return self.cached_sudo_password
-            success = initializer.apply(config, use_sudo=True, password_callback=cached_password_callback)
-            if success:
-                print(f"SocketCAN {interface} initialized successfully with cached password at {bitrate} bps")
-                return True
-            else:
-                print("SocketCAN initialization failed with cached password. Clearing cache...")
-                self.cached_sudo_password = None  # キャッシュをクリア
-            
-            # パスワード入力が必要な場合
-            print(f"SocketCAN initialization requires password. Prompting user...")
-            password, ok = QInputDialog.getText(
-                self, 
-                "SocketCAN初期化", 
-                "SocketCANの初期化に管理者権限が必要です。\nパスワードを入力してください：",
-                QLineEdit.Password
-            )
-            
-            if not ok or not password:
-                print("SocketCAN initialization cancelled by user")
-                return False
-            
-            def password_input_callback():
-                return password
-            
-            # パスワード付きで試行
-            print(f"Attempting SocketCAN initialization with password...")
-            success = initializer.apply(config, use_sudo=True, password_callback=password_input_callback)
-            
-            if success:
-                print(f"SocketCAN {interface} initialized successfully with password at {bitrate} bps")
-                # パスワードをキャッシュ
-                self.cached_sudo_password = password
-                return True
-            else:
-                print("SocketCAN initialization failed with password")
-                QMessageBox.warning(
-                    self, 
-                    "エラー", 
-                    f"SocketCANの初期化に失敗しました。パスワードが正しいか確認してください。"
-                )
-                return False
+
+            try:
+                initializer = SocketCANInitializer(interface)
                 
-        except Exception as e:
-            print(f"SocketCAN init error: {e}")
-            QMessageBox.critical(self, "エラー", f"SocketCAN初期化エラー: {e}")
-            return False
+                # 2Mbps以上の場合はCAN FDを有効化
+                is_canfd = bitrate >= 2000000
+                if is_canfd:
+                    config = CANConfig(bitrate=1000000, dbitrate=bitrate, fd=True)
+                else:
+                    config = CANConfig(bitrate=bitrate, fd=False)
+
+                # 設定を適用するヘルパー関数（重複するコードを削減）
+                def try_apply(pwd=None, no_interact=False):
+                    cb = (lambda: pwd) if pwd else None
+                    return initializer.apply(config, use_sudo=True, password_callback=cb, use_no_interactive=no_interact)
+
+                # 1. 既存の権限（パスワードなし）で試行
+                if try_apply(no_interact=True): return True
+                
+                # 2. キャッシュされたパスワードで試行
+                if getattr(self, 'cached_sudo_password', None) and try_apply(self.cached_sudo_password):
+                    return True
+
+                # 失敗した場合はキャッシュをクリアしてパスワード入力ダイアログを表示
+                self.cached_sudo_password = None
+                pwd, ok = QInputDialog.getText(
+                    self, "SocketCAN初期化", 
+                    "初期化に管理者権限が必要です。\nパスワードを入力してください：", 
+                    QLineEdit.Password
+                )
+                
+                if not ok or not pwd:
+                    return False
+
+                # 3. 入力された新しいパスワードで試行
+                if try_apply(pwd):
+                    self.cached_sudo_password = pwd  # 成功したらキャッシュに保存
+                    return True
+
+                # 全て失敗した場合 リトライの選択肢を表示
+                # QMessageBox.warning(self, "エラー", "初期化に失敗しました。パスワードが正しいか確認してください。")
+                retry = QMessageBox.question(
+                    self, "エラー", "初期化に失敗しました。パスワードが正しいか確認してください。\n再試行しますか？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if retry == QMessageBox.Yes:
+                    return self.init_socketcan(interface, bitrate)  # 再試行
+                return False
+
+            except Exception as e:
+                QMessageBox.critical(self, "エラー", f"SocketCAN初期化エラー: {e}")
+                return False
     
     def get_available_serial_ports(self):
         """利用可能なシリアルポートを取得"""

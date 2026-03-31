@@ -45,7 +45,7 @@ class SocketCANInitializer:
         self.interface = interface
         self.current_config: Optional[CANConfig] = None
 
-    def apply(self, config: CANConfig, use_sudo: bool = False, password_callback: Optional[Callable[[], Optional[str]]] = None) -> bool:
+    def apply(self, config: CANConfig, use_sudo: bool = False, password_callback: Optional[Callable[[], Optional[str]]] = None, use_no_interactive: bool = True) -> bool:
         try:
             # インターフェースをダウン
             cmd_down = [
@@ -54,7 +54,7 @@ class SocketCANInitializer:
             if use_sudo:
                 cmd_down = ["sudo"] + cmd_down
 
-            result = self._run_command(cmd_down, use_sudo, password_callback)
+            result = self._run_command(cmd_down, use_sudo, password_callback, use_no_interactive)
             if not result:
                 return False
 
@@ -78,7 +78,7 @@ class SocketCANInitializer:
             if use_sudo:
                 cmd_up = ["sudo"] + cmd_up
 
-            result = self._run_command(cmd_up, use_sudo, password_callback)
+            result = self._run_command(cmd_up, use_sudo, password_callback, use_no_interactive)
             if not result:
                 return False
 
@@ -89,11 +89,10 @@ class SocketCANInitializer:
             print(f"Unexpected error: {e}")
             return False
 
-    def _run_command(self, cmd: list, use_sudo: bool, password_callback: Optional[Callable[[], Optional[str]]]) -> bool:
+    def _run_command(self, cmd: list, use_sudo: bool, password_callback: Optional[Callable[[], Optional[str]]], use_no_interactive: bool = True) -> bool:
         try:
             # use_sudo=False の場合、またはパスワードコールバックがない場合は通常実行
-            if not use_sudo or not password_callback:
-                # stdin を完全に制御：パスダイアログなしで即座に失敗させる
+            if not use_sudo:
                 process = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -101,46 +100,49 @@ class SocketCANInitializer:
                     stderr=subprocess.PIPE,
                     text=True
                 )
-                stdout, stderr = process.communicate(timeout=5)
-                if process.returncode == 0:
-                    return True
-                else:
-                    # CANFDがサポートされていない場合のエラーをチェック
-                    error_msg = stderr.lower()
-                    if "operation not supported" in error_msg and "fd" in str(cmd):
-                        print(f"CANFD not supported, will retry without FD")
-                    else:
-                        print(f"Command failed: {stderr}")
-                    return False
+                stdout, stderr = process.communicate(timeout=1)
+                success = process.returncode == 0
+
             
-            # use_sudo=True かつ password_callback がある場合
-            # cmd に sudo が含まれている想定
             cmd_with_sudo_flag = cmd.copy()
-            if cmd_with_sudo_flag[0] == "sudo":
-                cmd_with_sudo_flag.insert(1, "-S")
+            if use_sudo and not password_callback:
+                if use_no_interactive:
+                    cmd_with_sudo_flag.insert(1, "-n")  # sudo -n を追加して非対話的にする
+                print("Running command with sudo (no password input): " + " ".join(cmd_with_sudo_flag))
+                process = subprocess.Popen(
+                    cmd_with_sudo_flag,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate(timeout=1)
+                success = process.returncode == 0
+            else:                    
+                if cmd_with_sudo_flag[0] == "sudo":
+                    if use_no_interactive:
+                        cmd_with_sudo_flag.insert(1, "-n")
+                    cmd_with_sudo_flag.insert(1 if not use_no_interactive else 2, "-S")
             
-            # パスワードコールバックからパスワードを取得
-            password = password_callback()
-            if not password:
-                print("Password input cancelled")
-                return False
-            
-            # stdin でパスワードを渡して実行
-            process = subprocess.Popen(
-                cmd_with_sudo_flag,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            stdout, stderr = process.communicate(input=password + "\n", timeout=5)
-            
-            if process.returncode == 0:
-                return True
-            else:
-                print(f"Error applying CAN config: {stderr}")
-                return False
+                # パスワードコールバックからパスワードを取得
+                password = password_callback()
+                if not password:
+                    print("Password input cancelled")
+                    return False
                 
+                # stdin でパスワードを渡して実行
+                process = subprocess.Popen(
+                    cmd_with_sudo_flag,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                stdout, stderr = process.communicate(input=password + "\n", timeout=1)
+                success = process.returncode == 0
+            
+            return success                
+        
         except subprocess.TimeoutExpired:
             print("sudo command timeout")
             return False
