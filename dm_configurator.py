@@ -465,23 +465,13 @@ class mainGUI(QWidget):
             self.bitrate.setCurrentText(text)
             self.bitrate.blockSignals(False)
             print(f"Updated connection bitrate to {text}")
+            
+            # ボーレート変更時は切断を実行
+            if param_name == "can_br":
+                print(f"{param_name} changed, disconnecting...")
+                self.on_disconnect()
         except Exception as e:
             print(f"Error sending {param_name}: {e}")
-        
-        # 自動再接続が有効な場合は再接続
-        if self.auto_reconnect_btn.isChecked():
-            print(f"{param_name} changed, reconnecting...")
-            self.is_reconnecting = True
-            # 接続設定セクションのボーレートを通信設定の値に同期
-            if param_name == "can_br":
-                self.bitrate.blockSignals(True)
-                self.bitrate.setCurrentText(text)
-                self.bitrate.blockSignals(False)
-            self.on_disconnect()
-            # 短い遅延後に再接続
-            QTimer.singleShot(1000, self.on_connect)
-        else:
-            print(f"{param_name} changed (auto-reconnect disabled)")
 
     def set_ui_enabled(self, enabled):
         """接続セクションのUIを有効/無効に設定"""
