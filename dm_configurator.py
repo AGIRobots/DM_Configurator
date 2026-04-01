@@ -1018,12 +1018,12 @@ class mainGUI(QWidget):
         self.update_bitrate_options()
         row += 1
         
-        # モータータイプ
-        layout.addWidget(QLabel("モーターの種類"), row, 0)
-        self.motor_type = QComboBox()
-        self.motor_type.addItems(["DM4310", "DM4310_48V", "DM4340", "DM4340_48V", "DM6006", "DM8006", "DM8009", "DM10010L", "DM10010", "DMH3510", "DMG62150", "DMH6220"])
-        layout.addWidget(self.motor_type, row, 1)
-        row += 1
+        # # モータータイプ
+        # layout.addWidget(QLabel("モーターの種類"), row, 0)
+        # self.motor_type = QComboBox()
+        # self.motor_type.addItems(["DM4310", "DM4310_48V", "DM4340", "DM4340_48V", "DM6006", "DM8006", "DM8009", "DM10010L", "DM10010", "DMH3510", "DMG62150", "DMH6220"])
+        # layout.addWidget(self.motor_type, row, 1)
+        # row += 1
         
         # モーターID
         layout.addWidget(QLabel("ESC_ID (Motor ID)"), row, 0)
@@ -1035,7 +1035,7 @@ class mainGUI(QWidget):
         row += 1
 
         # feed back ID
-        layout.addWidget(QLabel("feed back ID"), row, 0)
+        layout.addWidget(QLabel("MST_ID(feed back ID)"), row, 0)
         self.feed_back_id = QLineEdit()
         self.feed_back_id.setText("0x000")
         self.feed_back_id.setMaxLength(7)  # "0x" + 5文字
@@ -1276,7 +1276,7 @@ class mainGUI(QWidget):
 
     # --- (1, 1) 保護まわり ---
     def create_protection_group(self):
-        group = QGroupBox("保護まわり")
+        group = QGroupBox("保護設定")
         layout = QGridLayout()
         
         default_values = {
