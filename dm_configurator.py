@@ -193,7 +193,7 @@ class mainGUI(QWidget):
                 "9: 5Mbps": 5000000
             }
             bitrate = bitrate_map.get(bitrate_text, 1000000)
-            motor_type_text = self.motor_type.currentText()
+            # motor_type_text = self.motor_type.currentText()
             
             # motor_id を16進数形式から数値に変換
             try:
@@ -210,12 +210,14 @@ class mainGUI(QWidget):
                 return
             
             # モータータイプのマッピング（文字列をインデックスに変換）
-            motor_type_map = {
-                "DM4310": 0, "DM4310_48V": 1, "DM4340": 2, "DM4340_48V": 3,
-                "DM6006": 4, "DM8006": 5, "DM8009": 6, "DM10010L": 7,
-                "DM10010": 8, "DMH3510": 9, "DMG62150": 10, "DMH6220": 11
-            }
-            motor_type_idx = motor_type_map.get(motor_type_text, 0)
+            # 将来的に実装予定
+            # motor_type_map = {
+            #     "DM4310": 0, "DM4310_48V": 1, "DM4340": 2, "DM4340_48V": 3,
+            #     "DM6006": 4, "DM8006": 5, "DM8009": 6, "DM10010L": 7,
+            #     "DM10010": 8, "DMH3510": 9, "DMG62150": 10, "DMH6220": 11
+            # }
+            # motor_type_idx = motor_type_map.get(motor_type_text, 0)
+            motor_type_idx = 0
             
             # SocketCANの場合は初期化を試みる
             if interface_type == "socketcan":
@@ -275,13 +277,14 @@ class mainGUI(QWidget):
             self.interface_type.setEnabled(False)
             self.can_interface.setEnabled(False)
             self.bitrate.setEnabled(False)
-            self.motor_type.setEnabled(False)
+            # self.motor_type.setEnabled(False)
             self.motor_id.setEnabled(False)
             self.feed_back_id.setEnabled(False)
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
             self.set_widgets_enabled(True)  # パラメータ編集を有効化
-            print(f"Connected to {interface} ({interface_type}) - Motor: {motor_type_text} (ID: {motor_id})")
+            # print(f"Connected to {interface} ({interface_type}) - Motor: {motor_type_text} (ID: {motor_id})")
+            print(f"Connected to {interface} ({interface_type}) - Motor ID: 0x{motor_id:03X}")
             
             # 接続後に自動読み込みが有効な場合は設定を読み込む（再接続時はスキップ）
             if self.auto_read_btn.isChecked() and not self.is_reconnecting:
@@ -375,7 +378,7 @@ class mainGUI(QWidget):
             self.interface_type.setEnabled(True)
             self.can_interface.setEnabled(True)
             self.bitrate.setEnabled(True)
-            self.motor_type.setEnabled(True)
+            # self.motor_type.setEnabled(True)
             self.motor_id.setEnabled(True)
             self.feed_back_id.setEnabled(True)
             self.connect_btn.setEnabled(True)
@@ -487,7 +490,7 @@ class mainGUI(QWidget):
         self.interface_type.setEnabled(enabled)
         self.can_interface.setEnabled(enabled)
         self.bitrate.setEnabled(enabled)
-        self.motor_type.setEnabled(enabled)
+        # self.motor_type.setEnabled(enabled)  # 将来的に実装予定
         self.motor_id.setEnabled(enabled)
         self.feed_back_id.setEnabled(enabled)
         self.connect_btn.setEnabled(enabled)
@@ -1001,7 +1004,7 @@ class mainGUI(QWidget):
         # 検出されたインターフェースタイプに応じて初期表示を変更
         if self.detected_interface_type == "SocketCAN":
             available_items = self.get_available_can_interfaces()
-            self.interface_label.setText("CANインターフェース")
+            self.interface_label.setText("CAN ポート")
         else:
             available_items = self.get_available_serial_ports()
         self.can_interface.addItems(available_items)
