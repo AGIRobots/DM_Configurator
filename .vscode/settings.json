@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^python -m py_compile dm_configurator\\.py motor_control_tab\\.py 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
